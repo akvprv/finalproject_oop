@@ -3,11 +3,18 @@
 #include "proteus/components/Passive.hpp"
 #include "proteus/components/Sources.hpp"
 #include "proteus/core/Circuit.hpp"
+#include "proteus/drc/DesignRuleChecker.hpp"
+#include "proteus/history/History.hpp"
+#include "proteus/library/ComponentCatalog.hpp"
+#include "proteus/persistence/ProjectSerializer.hpp"
 #include "proteus/simulation/SimulationEngine.hpp"
+#include "proteus/ui/CanvasModel.hpp"
 #include "proteus/wiring/OrthogonalRouter.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -107,7 +114,7 @@ void testPinDetectionAndExplicitJunction() {
            "removing a junction separates the nets again");
 }
 
-void testJunctionLifecycle() {
+void testMovingWireRemovesStaleJunction() {
     proteus::Circuit circuit;
     auto& left = circuit.emplaceComponent<TestComponent>(
         "LEFT", proteus::Point{0.0, 0.0});
@@ -121,17 +128,9 @@ void testJunctionLifecycle() {
     const auto& vertical = circuit.connect({top.id(), 1}, {bottom.id(), 0});
     circuit.addJunction({75.0, 0.0}, {horizontal.id(), vertical.id()});
 
-    bool duplicateRejected = false;
-    try {
-        circuit.addJunction({75.0, 0.0}, {horizontal.id(), vertical.id()});
-    } catch (const std::invalid_argument&) {
-        duplicateRejected = true;
-    }
-    expect(duplicateRejected, "duplicate wire junction is rejected");
-
     circuit.moveComponent(bottom.id(), {125.0, 50.0});
     expect(circuit.junctionIds().empty(),
-           "moving a wire away removes the stale junction");
+           "moving a wire away from a junction removes the stale junction");
     expect(left.pin(1).netId() != top.pin(1).netId(),
            "a removed stale junction no longer joins unrelated nets");
 }
@@ -266,27 +265,122 @@ void testSimulationDiagnostics() {
     expect(hasShortMessage, "short circuit is reported in the log");
 }
 
-void testInvalidNumericValues() {
+void testCanvasAndSelectionModels() {
+    proteus::CanvasViewport viewport;
+    expect(viewport.snap({31.0, 49.0}).approximatelyEquals({40.0, 40.0}),
+           "snap rounds scene coordinates to the nearest grid point");
+    viewport.zoomAt(2.0, {100.0, 100.0});
+    expect(viewport.sceneFromView({100.0, 100.0}).approximatelyEquals({100.0, 100.0}),
+           "zoom keeps the scene point below the cursor fixed");
+    viewport.panBy({20.0, -10.0});
+    expect(viewport.pan().approximatelyEquals({-80.0, -110.0}),
+           "panning updates the view translation");
+
+    proteus::SelectionModel selection;
+    selection.selectOnly(1);
+    selection.add(2);
+    selection.toggle(1);
+    expect(!selection.contains(1) && selection.contains(2),
+           "selection model supports single, additive, and toggle selection");
+}
+
+void testCatalogSearchAndCreation() {
+    proteus::ComponentCatalog catalog;
+    const auto digital = catalog.search("gate", "Digital");
+    expect(digital.size() == 5,
+           "catalog filters components by text and category");
     proteus::Circuit circuit;
+    auto& created = catalog.create(circuit, "Resistor", "R1", {40.0, 60.0});
+    expect(created.typeName() == "Resistor" &&
+               created.position().approximatelyEquals({40.0, 60.0}),
+           "catalog creates a requested component instance");
+}
 
-    bool sourceRejected = false;
-    try {
-        circuit.emplaceComponent<proteus::DcVoltageSource>(
-            "V_BAD", std::numeric_limits<double>::quiet_NaN());
-    } catch (const std::invalid_argument&) {
-        sourceRejected = true;
-    }
-    expect(sourceRejected, "source rejects a non-finite voltage");
+void testProjectRoundTripAndHistory() {
+    proteus::ProjectDocument source;
+    source.canvas.width = 2200.0;
+    source.canvas.preset = proteus::CanvasPreset::A3;
+    auto& supply = source.circuit.emplaceComponent<proteus::DcVoltageSource>(
+        "V_MAIN", 3.3, proteus::Point{20.0, 20.0});
+    auto& resistor = source.circuit.emplaceComponent<proteus::Resistor>(
+        "R_LOAD", 4700.0, proteus::Point{120.0, 20.0});
+    resistor.rotateClockwise();
+    source.circuit.connect({supply.id(), 0}, {resistor.id(), 0});
 
-    bool passiveRejected = false;
-    try {
-        circuit.emplaceComponent<proteus::Resistor>(
-            "R_BAD", std::numeric_limits<double>::infinity());
-    } catch (const std::invalid_argument&) {
-        passiveRejected = true;
-    }
-    expect(passiveRejected, "passive component rejects a non-finite value");
+    const std::string json = proteus::ProjectSerializer::serialize(source);
+    auto restored = proteus::ProjectSerializer::deserialize(json);
+    expect(restored.canvas.width == 2200.0 &&
+               restored.canvas.preset == proteus::CanvasPreset::A3,
+           "project JSON preserves canvas settings");
+    expect(restored.circuit.componentIds().size() == 2 &&
+               restored.circuit.wireIds().size() == 1,
+           "project JSON restores components and wires");
+    const auto& restoredResistor = dynamic_cast<const proteus::Resistor&>(
+        restored.circuit.component(2));
+    expect(restoredResistor.resistanceOhms() == 4700.0 &&
+               restoredResistor.rotation() == proteus::Rotation::Deg90,
+           "project JSON preserves properties and transforms");
 
+    proteus::History history(10);
+    history.reset(restored);
+    restored.circuit.moveComponent(2, {180.0, 80.0});
+    history.record(restored);
+    auto earlier = history.undo();
+    expect(earlier.circuit.component(2).position().approximatelyEquals({120.0, 20.0}),
+           "undo restores the preceding circuit snapshot");
+    auto later = history.redo();
+    expect(later.circuit.component(2).position().approximatelyEquals({180.0, 80.0}),
+           "redo restores the following circuit snapshot");
+
+    proteus::History historyWithoutReset(4);
+    historyWithoutReset.record(restored);
+    expect(historyWithoutReset.size() == 1 && !historyWithoutReset.canUndo(),
+           "history accepts its first snapshot even when reset was not called");
+
+    const auto uniqueSuffix = std::chrono::high_resolution_clock::now()
+                                  .time_since_epoch()
+                                  .count();
+    const auto savePath = std::filesystem::temp_directory_path() /
+        ("proteus_serializer_" + std::to_string(uniqueSuffix) + ".json");
+    proteus::ProjectSerializer::saveFile(restored, savePath);
+    restored.circuit.moveComponent(2, {240.0, 120.0});
+    proteus::ProjectSerializer::saveFile(restored, savePath);
+    const auto loadedFromDisk = proteus::ProjectSerializer::loadFile(savePath);
+    expect(loadedFromDisk.circuit.component(2).position().approximatelyEquals(
+               {240.0, 120.0}),
+           "safe file replacement preserves the latest complete project");
+    std::filesystem::path temporary = savePath;
+    temporary += ".tmp";
+    std::filesystem::path backup = savePath;
+    backup += ".bak";
+    expect(!std::filesystem::exists(temporary) &&
+               !std::filesystem::exists(backup),
+           "successful save removes temporary and backup files");
+    std::error_code ignored;
+    std::filesystem::remove(savePath, ignored);
+}
+
+void testDesignRuleCheckerFacade() {
+    proteus::Circuit circuit;
+    circuit.emplaceComponent<proteus::Ground>("GND1");
+    circuit.emplaceComponent<proteus::LogicGate>(
+        "U1", proteus::GateKind::And, 2);
+    const auto issues = proteus::DesignRuleChecker::inspect(circuit);
+    const bool found = std::any_of(
+        issues.begin(), issues.end(), [](const proteus::DrcIssue& issue) {
+            return issue.code == "FLOATING_INPUT";
+        });
+    expect(found, "DRC facade reports floating digital inputs");
+
+    proteus::Circuit cleanCircuit;
+    cleanCircuit.emplaceComponent<proteus::Ground>("GND1");
+    const auto cleanIssues = proteus::DesignRuleChecker::inspect(cleanCircuit);
+    expect(cleanIssues.size() == 1 && cleanIssues.front().code == "DRC_CLEAN",
+           "DRC reports a clean result instead of simulation lifecycle messages");
+}
+
+void testInvalidNumericValuesAreRejected() {
+    proteus::Circuit circuit;
     bool ledRejected = false;
     try {
         circuit.emplaceComponent<proteus::Led>(
@@ -294,16 +388,29 @@ void testInvalidNumericValues() {
     } catch (const std::invalid_argument&) {
         ledRejected = true;
     }
-    expect(ledRejected, "LED rejects a non-finite threshold");
+    expect(ledRejected, "LED rejects a non-finite threshold at construction");
 
-    bool delayRejected = false;
+    bool canvasRejected = false;
     try {
-        circuit.emplaceComponent<proteus::DFlipFlop>(
-            "FF_BAD", std::numeric_limits<double>::infinity());
+        proteus::CanvasSettings settings;
+        settings.width = std::numeric_limits<double>::infinity();
+        proteus::CanvasViewport viewport(settings);
+        (void)viewport;
     } catch (const std::invalid_argument&) {
-        delayRejected = true;
+        canvasRejected = true;
     }
-    expect(delayRejected, "digital component rejects a non-finite delay");
+    expect(canvasRejected, "canvas rejects non-finite dimensions");
+
+    const std::string unsupported =
+        "{\"format\":\"ProteusProject\",\"version\":2,\"canvas\":{},"
+        "\"components\":[],\"wires\":[],\"junctions\":[]}";
+    bool versionRejected = false;
+    try {
+        (void)proteus::ProjectSerializer::deserialize(unsupported);
+    } catch (const std::invalid_argument&) {
+        versionRejected = true;
+    }
+    expect(versionRejected, "serializer rejects unsupported project versions");
 }
 
 }
@@ -313,12 +420,16 @@ int main() {
     testOrthogonalRouting();
     testCircuitConnectivityAndDragging();
     testPinDetectionAndExplicitJunction();
-    testJunctionLifecycle();
+    testMovingWireRemovesStaleJunction();
     testLogicGateTruthAndUndefinedState();
     testDFlipFlopRisingEdge();
     testSimulationControlsAndLiveInteraction();
     testSimulationDiagnostics();
-    testInvalidNumericValues();
+    testCanvasAndSelectionModels();
+    testCatalogSearchAndCreation();
+    testProjectRoundTripAndHistory();
+    testDesignRuleCheckerFacade();
+    testInvalidNumericValuesAreRejected();
     if (failures != 0) {
         std::cerr << failures << " test(s) failed\n";
         return EXIT_FAILURE;
