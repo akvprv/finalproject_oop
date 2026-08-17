@@ -1,42 +1,71 @@
-# Amirhossein Ashkurlaji Contribution
+# Proteus Backend
 
-Student number: 402101211
+This repository contains the C++ backend for the Proteus-style circuit editor.
+The model is independent of Qt, so the user interface can focus on drawing and
+input handling while the backend owns circuit state and simulation behavior.
 
-This package contains the files assigned to Amirhossein Ashkurlaji:
+## Features
 
-- Startup screen and recent projects
-- Canvas presets
-- Grid and snap
-- Zoom, pan, coordinates, status reporting
-- Placement, selection, multi-selection, and drag and drop
-- Rotation, mirroring, deletion, wiring gestures, and property dialogs
-- Shared schematic-symbol rendering for both the canvas and library preview
+- Component and pin models with local and scene coordinates
+- Rotation and horizontal or vertical mirroring
+- Pin hit testing
+- Circuit, wire, junction, and net management
+- Orthogonal wire routing and live rerouting while components move
+- Ground, DC source, battery, and clock source
+- Resistor, capacitor, and inductor models
+- Switch, push button, LED, and seven-segment display
+- AND, OR, NOT, XOR, NAND, and rising-edge D flip-flop
+- Configurable logic levels and propagation delay
+- Run, pause, stop, and single-step simulation controls
+- Live wire colors for high, low, and undefined signals
+- Floating-input, output-conflict, and convergence diagnostics
 
-## Corrections in this reviewed package
+## Reviewed corrections
 
-- Resets transient editor state when a project is created, opened, undone, or redone.
-- Tracks unsaved changes and blocks structural editing while simulation is active.
-- Rebuilds label counters after loading to prevent duplicate labels such as `R1`.
-- Uses rotation-aware hit boxes and validates finite canvas dimensions.
-- Completes editable properties for batteries, clocks, LEDs, switches, displays,
-  gates, and flip-flops.
-- Adds `SchematicPainter` so components are drawn as circuit symbols instead of
-  generic boxes.
+- Removes stale junctions and rebuilds nets after live wire rerouting.
+- Rejects duplicate junctions and invalid non-finite component values.
+- Treats every error-level preflight diagnostic as a simulation blocker.
+- Exposes complete editable properties for LEDs, displays, gates, and DFFs.
+- Adds regression tests for junction lifecycle and numeric validation.
 
-Copy these paths into the complete repository without changing their relative
-locations. The files use the shared core, library, persistence, history, and
-simulation interfaces from the complete project.
+The submitted ZIP intentionally excludes the working `.git` directory. Import
+the files into the team repository and create commits with the real contributor
+identity after review.
 
-This is a contribution package, not a standalone Qt application. Apply it to
-the complete repository together with the reviewed Core and Tools packages.
+## Build
 
-No Git author email was invented for this package. Before committing, set the
-email connected to the student's GitHub account:
+Linux or MinGW:
 
 ```bash
-git config user.name "Amirhossein Ashkurlaji"
-git config user.email "REAL_GITHUB_EMAIL"
-git switch -c feature/ashkurlaji-ui
-git add include/proteus/ui src/ui app/WelcomeDialog.* app/CanvasWidget.* app/SchematicPainter.*
-git commit -m "feat(canvas): add startup canvas and editor interactions"
+make test
+make demo
+./build/proteus_demo
 ```
+
+CMake, Qt Creator, or Visual Studio:
+
+```bash
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+The project requires C++20 and CMake 3.20 or newer. Link the Qt application to
+the `proteus_backend` target.
+
+## Layout
+
+- `include/proteus/core`: circuit, component, pin, wire, and junction models
+- `include/proteus/components`: source, passive, interactive, and digital parts
+- `include/proteus/simulation`: simulation engine and diagnostics
+- `include/proteus/wiring`: orthogonal routing
+- `tests/test_main.cpp`: standalone tests with no third-party dependency
+- `docs/QT_INTEGRATION.md`: Qt integration notes
+- `docs/SECTION_CHECKLIST.md`: assignment coverage
+- `docs/GIT_WORKFLOW.md`: Git workflow
+
+## Scope
+
+The simulation engine focuses on digital logic and interactive components.
+Resistors, capacitors, and inductors have complete component models and editable
+values, but the project does not include a full analog MNA solver.

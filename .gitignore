@@ -1,9 +1,13 @@
 build/
 build-*/
 out/
-.vscode/
-.idea/
+/.cache/
+/.idea/
+/.vscode/
 *.user
+*.o
+*.a
+*.exe
 *.tmp
 *.bak
 exports/
