@@ -1,10 +1,10 @@
 # Review and Fix Summary
 
-- Fixed stale and duplicate junction handling.
-- Rebuilt nets after wire rerouting.
-- Rejected NaN and Infinity in sources, passives, clocks, LEDs, and delays.
-- Blocked simulation startup for every error-level diagnostic.
-- Added missing editable properties and regression coverage.
-- Removed repository internals from the distributable archive.
+- Hardened JSON schema, identifier, reference, enum, and numeric validation.
+- Added temporary-file saving with backup restoration on failure.
+- Fixed History initialization and the clean DRC result.
+- Added Unicode-safe project paths on Windows.
+- Added unsaved-change prompts and correct Save As path handling.
+- Improved active-list removal, schematic preview, tests, and repository metadata.
 
-The backend remains independent of Qt and can be built and tested on its own.
+Apply this package after the reviewed UI and Core packages.
